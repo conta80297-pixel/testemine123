@@ -1,8 +1,9 @@
 import requests, re, json, asyncio, websockets, urllib.parse, time, os, sys, threading, signal, random, collections, concurrent.futures
 
 # redirect stdout/stderr to the log file directly so no external redirect is needed
-sys.stdout = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binder2_out.log'), 'a', buffering=1)
-sys.stderr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binder2_err.log'), 'a', buffering=1)
+if os.environ.get('BINDER_LOG'):
+    sys.stdout = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binder2_out.log'), 'a', buffering=1)
+    sys.stderr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binder2_err.log'), 'a', buffering=1)
 
 token_re = re.compile(r'buildToken["\']?\s*:\s*["\']([^"\']+)["\']')
 PROVIDERS = sys.argv[2].split('|') if len(sys.argv) > 2 else ['gesis.mybinder.org', 'bids.mybinder.org', '2i2c.mybinder.org']

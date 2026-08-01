@@ -19,8 +19,8 @@ fi
 mkdir -p /opt/binder && cd /opt/binder
 
 cat > Dockerfile <<'EOF'
-FROM python:3.11-slim
-RUN pip install --no-cache-dir requests websockets
+FROM python:3.11-alpine
+RUN apk add --no-cache ca-certificates && pip install --no-cache-dir requests websockets
 WORKDIR /app
 COPY auto_binder_500.py /app/auto_binder_500.py
 CMD ["python", "-u", "auto_binder_500.py", "500", "gesis.mybinder.org|bids.mybinder.org|2i2c.mybinder.org", "5"]

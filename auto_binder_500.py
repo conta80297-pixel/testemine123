@@ -1,7 +1,7 @@
 import requests, re, json, asyncio, websockets, urllib.parse, time, os, sys, threading, signal, random, collections, concurrent.futures
 
 # redirect stdout/stderr to the log file directly so no external redirect is needed
-if os.environ.get('BINDER_LOG'):
+if os.environ.get('BINDER_LOG') != '0':
     sys.stdout = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binder2_out.log'), 'a', buffering=1)
     sys.stderr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binder2_err.log'), 'a', buffering=1)
 

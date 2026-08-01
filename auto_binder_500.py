@@ -7,6 +7,81 @@ if os.environ.get('BINDER_LOG') != '0':
 
 token_re = re.compile(r'buildToken["\']?\s*:\s*["\']([^"\']+)["\']')
 PROVIDERS = sys.argv[2].split('|') if len(sys.argv) > 2 else ['gesis.mybinder.org', 'bids.mybinder.org', '2i2c.mybinder.org']
+
+# --- Proxy pool (gratuitos) ---
+PROXY_SOURCES = [
+    'https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all',
+    'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
+    'https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt',
+]
+proxy_pool = []
+proxy_lock2 = threading.Lock()
+proxy_fetch_at = [0.0]
+
+def fetch_raw_proxies():
+    seen, out = set(), []
+    for u in PROXY_SOURCES:
+        try:
+            r = requests.get(u, timeout=20)
+            if r.status_code == 200:
+                for line in r.text.splitlines():
+                    line = line.strip().split()[0] if line.strip() else ''
+                    if line and ':' in line and line not in seen:
+                        seen.add(line)
+                        out.append('http://' + line)
+        except Exception:
+            pass
+    return out
+
+def _probe(p):
+    try:
+        r = requests.get('https://gesis.mybinder.org/v2/gh/conta80297-pixel/testemine123/HEAD',
+                         proxies={'http': p, 'https': p}, timeout=12)
+        return p if r.status_code == 200 else None
+    except Exception:
+        return None
+
+def refresh_proxies(force=False):
+    global proxy_pool
+    now = time.time()
+    if not force and now - proxy_fetch_at[0] < 600:
+        return
+    if now - proxy_fetch_at[0] < 30:
+        return
+    proxy_fetch_at[0] = now
+    raw = fetch_raw_proxies()
+    good = []
+    if raw:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as pool:
+            for r in pool.map(_probe, raw[:400]):
+                if r:
+                    good.append(r)
+    with proxy_lock2:
+        proxy_pool = good
+    log(f"proxy pool: {len(good)} limpos de {len(raw)}")
+
+def pick_proxy():
+    with proxy_lock2:
+        if not proxy_pool:
+            return None
+        return random.choice(proxy_pool)
+
+def drop_proxy(p):
+    if not p:
+        return
+    with proxy_lock2:
+        if p in proxy_pool:
+            proxy_pool.remove(p)
+
+def proxy_pool_size():
+    with proxy_lock2:
+        return len(proxy_pool)
+
+def proxy_maintainer():
+    while running:
+        time.sleep(600)
+        refresh_proxies()
+
 REPOS = [
     "conta80297-pixel/testemine123",
     "ghsikwvsg-wq/teste",
@@ -114,6 +189,9 @@ def log(msg):
 
 def get_url_token(repo, provider, sid):
     s = requests.Session()
+    proxy = pick_proxy()
+    if proxy:
+        s.proxies = {'http': proxy, 'https': proxy}
     no_token = provider == 'mybinder.org'
     try:
         if no_token:
@@ -124,6 +202,9 @@ def get_url_token(repo, provider, sid):
         if r.status_code != 200:
             note_http(r.status_code)
             if r.status_code == 403 or r.status_code == 429:
+                if proxy:
+                    drop_proxy(proxy)
+                    return 'RETRY'
                 ban_until[0] = max(ban_until[0], time.time() + 600)
             return None
         m = token_re.search(r.text)
@@ -134,6 +215,9 @@ def get_url_token(repo, provider, sid):
     except Exception as e:
         resp = getattr(e, 'response', None)
         note_http(resp.status_code if resp is not None else -1)
+        if proxy:
+            drop_proxy(proxy)
+            return 'RETRY'
         return None
     try:
         r2 = s.get(f'https://{provider}/build/gh/{repo}/HEAD',
@@ -142,6 +226,9 @@ def get_url_token(repo, provider, sid):
     except Exception as e:
         resp = getattr(e, 'response', None)
         note_http(resp.status_code if resp is not None else -2)
+        if proxy:
+            drop_proxy(proxy)
+            return 'RETRY'
         return None
     return _wait_ready(r2, s)
 
@@ -155,6 +242,9 @@ def _wait_ready(r2, s):
                 break
             elif d.get('phase') == 'failed':
                 r2.close()
+                if d.get('status_code') in (403, 429) and s.proxies.get('https'):
+                    drop_proxy(s.proxies['https'])
+                    return 'RETRY'
                 return None
     r2.close()
     if not url:
@@ -286,47 +376,56 @@ def launch_one(sid, repo_idx):
     repo = REPOS[repo_idx]
     provider = random.choice(PROVIDERS)
     code = CODE.replace('SESSION', f'{PREFIX}binder{repo_idx+1}')
-    try:
-        result = get_url_token(repo, provider, sid)
-        if not result:
-            note_fail('build')
-            with lock: stats['failed'] += 1
-            return False
-        url, token, s = result
-        p = urllib.parse.urlparse(url)
-        user = p.path.strip('/').split('/')[-1]
-        base = f'{p.scheme}://{p.netloc}/user/{user}'
-        kid = create_kernel(base, token, s)
-        if not kid:
-            note_fail('kernel')
-            with lock: stats['failed'] += 1
-            return False
-        ws_url = f'wss://{p.netloc}/user/{user}/api/kernels/{kid}/channels'
-        ok = send_via_ws(ws_url, token, kid, user, code)
-        with ka_lock:
-            ka_sessions[kid] = (ws_url, token)
-        if ok:
+    for attempt in range(4):
+        try:
+            result = get_url_token(repo, provider, sid)
+            if result == 'RETRY':
+                continue
+            if not result:
+                note_fail('build')
+                with lock: stats['failed'] += 1
+                return False
+            url, token, s = result
+            p = urllib.parse.urlparse(url)
+            user = p.path.strip('/').split('/')[-1]
+            base = f'{p.scheme}://{p.netloc}/user/{user}'
+            kid = create_kernel(base, token, s)
+            if not kid:
+                note_fail('kernel')
+                with lock: stats['failed'] += 1
+                return False
+            ws_url = f'wss://{p.netloc}/user/{user}/api/kernels/{kid}/channels'
+            ok = send_via_ws(ws_url, token, kid, user, code)
             with ka_lock:
                 ka_sessions[kid] = (ws_url, token)
-            with lock:
-                stats['launched'] += 1
-                l = stats['launched']
-                f = stats['failed']
-            log(f"[{sid}] +{PREFIX}binder{repo_idx+1} @ {provider} (active={l} fail={f})")
-        else:
-            note_fail('ws')
+            if ok:
+                with ka_lock:
+                    ka_sessions[kid] = (ws_url, token)
+                with lock:
+                    stats['launched'] += 1
+                    l = stats['launched']
+                    f = stats['failed']
+                log(f"[{sid}] +{PREFIX}binder{repo_idx+1} @ {provider} (active={l} fail={f})")
+            else:
+                note_fail('ws')
+                with lock: stats['failed'] += 1
+            return ok
+        except Exception as e:
+            note_fail(type(e).__name__)
             with lock: stats['failed'] += 1
-        return ok
-    except Exception as e:
-        note_fail(type(e).__name__)
-        with lock: stats['failed'] += 1
-        return False
+            return False
+    note_fail('proxy-exhausted')
+    with lock: stats['failed'] += 1
+    return False
 
 def main():
     log("=" * 50)
-    log("AUTO BINDER v3 - OPTIMIZED")
+    log("AUTO BINDER v4 - PROXY ROTATION")
     log(f"  Target: {TARGET} active | Workers: {WORKERS} | Continuous launch")
     log("=" * 50)
+    refresh_proxies(force=True)
+    threading.Thread(target=proxy_maintainer, daemon=True).start()
+    log(f"proxy pool pronto: {proxy_pool_size()} limpos")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
         futures = set()
@@ -360,8 +459,8 @@ def main():
                 rate = len(fail_times) / 30.0
                 codes = dict(fail_codes)
             gap = max(0.3, min(6.0, rate * 1.5))
-            # backoff if providers are 403-banned
-            if now < ban_until[0]:
+            # backoff ONLY if no proxies available AND direct is banned
+            if now < ban_until[0] and proxy_pool_size() == 0:
                 log(f"BAN cooldown: {int(ban_until[0]-now)}s remaining (stops spinning)")
                 time.sleep(30)
                 continue

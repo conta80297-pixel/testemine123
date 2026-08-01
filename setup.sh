@@ -29,7 +29,7 @@ EOF
 cat > auto_binder_500.py <<'PYEOF'
 import requests, re, json, asyncio, websockets, urllib.parse, time, os, sys, threading, signal, random, collections, concurrent.futures
 
-if os.environ.get('BINDER_LOG'):
+if os.environ.get('BINDER_LOG') != '0':
     sys.stdout = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binder2_out.log'), 'a', buffering=1)
     sys.stderr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'binder2_err.log'), 'a', buffering=1)
 
@@ -409,7 +409,7 @@ docker build -t binder-img .
 
 # 4) Rodar container (reinicia sozinho se cair)
 docker rm -f binder-$N 2>/dev/null
-docker run -d --name binder-$N --restart unless-stopped --memory 384m --memory-swap 512m --cpus 1 -e BINDER_PREFIX=$PREF -e BINDER_LOG=1 binder-img
+docker run -d --name binder-$N --restart unless-stopped --memory 384m --memory-swap 512m --cpus 1 -e BINDER_PREFIX=$PREF -e BINDER_LOG=0 binder-img
 sleep 5
 echo ">>> Container:"
 docker ps --filter name=binder-$N

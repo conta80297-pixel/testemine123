@@ -408,7 +408,7 @@ docker build -t binder-img .
 
 # 4) Rodar container (reinicia sozinho se cair)
 docker rm -f binder-$N 2>/dev/null
-docker run -d --name binder-$N --restart unless-stopped -e BINDER_PREFIX=$PREF binder-img
+docker run -d --name binder-$N --restart unless-stopped --memory 384m --memory-swap 512m --cpus 1 -e BINDER_PREFIX=$PREF binder-img
 sleep 5
 echo ">>> Container:"
 docker ps --filter name=binder-$N
